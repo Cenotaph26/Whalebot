@@ -130,6 +130,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .log-msg{color:var(--text);word-break:break-word}
 .ct-row{display:grid;grid-template-columns:52px 46px 80px 80px 70px 40px;gap:4px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px}
 .ct-row:last-child{border-bottom:none}
+.cfg-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px}
+.cfg-row:last-child{border-bottom:none}
+.cfg-key{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+.cfg-val{font-weight:600;color:var(--cyan);font-size:12px}
+.reload-badge{font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(57,208,216,.1);color:var(--cyan);border:1px solid rgba(57,208,216,.2);margin-left:6px}
 .ct-row.header{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px}
 #halted-banner{display:none;position:fixed;top:48px;left:0;right:0;background:var(--red);color:#fff;text-align:center;padding:8px;font-weight:700;font-size:12px;z-index:99}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
@@ -232,6 +237,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
     </div>
     <!-- RIGHT -->
     <div class="panel">
+      <div class="card">
+        <div class="card-head">⚙️ Aktif Config <span class="reload-badge" id="reload-badge">CANLI</span></div>
+        <div class="card-body" id="config-body">
+          <div class="cfg-row"><span class="cfg-key">Layering Esigi</span><span class="cfg-val" id="c-layer">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Min Sinyal</span><span class="cfg-val" id="c-minsig">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Balina BTC Esigi</span><span class="cfg-val" id="c-whale">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Stop Loss</span><span class="cfg-val" id="c-sl">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Take Profit</span><span class="cfg-val" id="c-tp">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Islem Boyutu</span><span class="cfg-val" id="c-size">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Gunluk Kayip Limiti</span><span class="cfg-val" id="c-dll">—</span></div>
+          <div class="cfg-row"><span class="cfg-key">Son Reload</span><span class="cfg-val" id="c-reload">—</span></div>
+        </div>
+      </div>
       <div class="card" style="flex:1">
         <div class="card-head">📡 Bot Logları</div>
         <div class="card-body" id="log-body" style="max-height:calc(100vh - 120px);overflow-y:auto">
@@ -334,6 +352,17 @@ function render(d){
       <span class="${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}$${fmt(t.pnl)}</span>
       <span style="color:${t.status==='TP'?'var(--green)':'var(--red)'}">${t.status}</span>
     </div>`).join('');
+  const cfg=d.config||{};
+  const lr=bot.last_reload;
+  .textContent  = cfg.LAYERING_PULL_THRESHOLD ?? '—';
+  .textContent = cfg.MIN_SIGNALS ?? '—';
+  .textContent  = (cfg.WHALE_BTC_THRESHOLD ?? '—') + ' BTC';
+  .textContent     = (cfg.STOP_LOSS_PCT ?? '—') + '%';
+  .textContent     = (cfg.TAKE_PROFIT_PCT ?? '—') + '%';
+  .textContent   = '$' + (cfg.TRADE_SIZE_USDT ?? '—');
+  .textContent    = (cfg.DAILY_LOSS_LIMIT_PCT ?? '—') + '%';
+  .textContent = lr != null ? lr + 'sn once' : '—';
+  .textContent = lr != null && lr < cfg.CONFIG_RELOAD_SEC*2 ? 'CANLI' : 'STALE';
   if(logs.length>0){
     const lb=$('log-body');
     const atBottom=lb.scrollHeight-lb.clientHeight<=lb.scrollTop+40;

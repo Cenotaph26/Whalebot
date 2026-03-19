@@ -1,6 +1,6 @@
 """
-Bot Engine — Ana Orkestratör
-WebSocket bağlantıları + tüm modülleri birleştirir.
+Bot Engine — Ana Orkestrator
+WebSocket baglantilari + canli config reload + tum moduller
 """
 
 import asyncio
@@ -8,11 +8,10 @@ import json
 import time
 import logging
 from collections import deque
-from typing import Optional
 
 import websockets
 
-from src.config import Config, Signal
+from src.config import Config, reload_config
 from src.detector import WhaleDetector, SignalEngine
 from src.anti_manip import AntiManipEngine
 from src.risk import RiskManager
@@ -22,13 +21,14 @@ logger = logging.getLogger("bot")
 
 class BotState:
     def __init__(self):
-        self.running:    bool  = True
-        self.connected:  bool  = False
-        self.started_at: float = time.time()
-        self.tick_count: int   = 0
-        self.last_tick:  float = 0.0
-        self.status_msg: str   = "Baslatiliyor..."
-        self.log_lines:  deque = deque(maxlen=80)
+        self.running:       bool  = True
+        self.connected:     bool  = False
+        self.started_at:    float = time.time()
+        self.tick_count:    int   = 0
+        self.last_tick:     float = 0.0
+        self.status_msg:    str   = "Baslatiliyor..."
+        self.last_reload:   float = 0.0
+        self.log_lines:     deque = deque(maxlen=80)
 
     def log(self, msg: str, level: str = "INFO"):
         ts = time.strftime("%H:%M:%S")
@@ -42,11 +42,31 @@ signals    = SignalEngine()
 anti_manip = AntiManipEngine()
 risk       = RiskManager()
 
-# URL listesi: önce birincil, sonra backup denenir
-_STREAM_URLS = [
-    Config.STREAM_URL,
-    Config.STREAM_URL_BACKUP,
-]
+_STREAM_URLS = [Config.STREAM_URL, Config.STREAM_URL_BACKUP]
+
+
+# ─────────────────────────────────────────
+#  Canli Config Reload Loop
+# ─────────────────────────────────────────
+
+async def _config_reload_loop():
+    """
+    Her CONFIG_RELOAD_SEC saniyede env var'lari tekrar okur.
+    Railway Variables'ta degisiklik yapinca bot otomatik alir,
+    restart gerekmez.
+    """
+    await asyncio.sleep(10)  # ilk 10sn bekleme
+    while state.running:
+        try:
+            interval = Config.CONFIG_RELOAD_SEC
+            changed  = reload_config()
+            if changed:
+                for c in changed:
+                    state.log(f"Config guncellendi: {c}", "WARN")
+            state.last_reload = time.time()
+        except Exception as e:
+            state.log(f"Config reload hatasi: {e}", "ERROR")
+        await asyncio.sleep(interval)
 
 
 # ─────────────────────────────────────────
@@ -54,30 +74,22 @@ _STREAM_URLS = [
 # ─────────────────────────────────────────
 
 async def _trade_stream():
-    url_index = 0
+    url_index       = 0
     reconnect_delay = 2
 
     while state.running:
-        base_url = _STREAM_URLS[url_index % len(_STREAM_URLS)]
-        url = f"{base_url}/{Config.SYMBOL.lower()}@aggTrade"
-
+        base = _STREAM_URLS[url_index % len(_STREAM_URLS)]
+        url  = f"{base}/{Config.SYMBOL.lower()}@aggTrade"
         try:
             state.log(f"Trade stream baglanıyor: {url}")
-            async with websockets.connect(
-                url,
-                ping_interval=20,
-                ping_timeout=10,
-                open_timeout=15,
-            ) as ws:
+            async with websockets.connect(url, ping_interval=20, open_timeout=15) as ws:
                 state.connected = True
-                state.log(f"Trade stream baglandi ({base_url.split('/')[2]})")
+                state.log(f"Trade stream baglandi")
                 reconnect_delay = 2
-
                 async for raw in ws:
                     if not state.running:
                         break
-                    data = json.loads(raw)
-                    await _handle_trade(data)
+                    await _handle_trade(json.loads(raw))
 
         except websockets.exceptions.ConnectionClosed as e:
             state.connected = False
@@ -86,14 +98,9 @@ async def _trade_stream():
             reconnect_delay = min(reconnect_delay * 2, 30)
 
         except OSError as e:
-            # DNS / network hatası — backup URL'e gec
             state.connected = False
             url_index += 1
-            state.log(
-                f"Baglanti hatasi [{base_url.split('/')[2]}]: {e} "
-                f"— {'backup URL deneniyor' if url_index % 2 == 1 else 'tekrar birincil URL'}",
-                "WARN"
-            )
+            state.log(f"Baglanti hatasi, backup URL deneniyor: {e}", "WARN")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 30)
 
@@ -109,38 +116,31 @@ async def _trade_stream():
 # ─────────────────────────────────────────
 
 async def _book_stream():
-    url_index = 0
+    url_index       = 0
     reconnect_delay = 2
 
     while state.running:
-        base_url = _STREAM_URLS[url_index % len(_STREAM_URLS)]
-        url = f"{base_url}/{Config.SYMBOL.lower()}@depth@100ms"
-
+        base = _STREAM_URLS[url_index % len(_STREAM_URLS)]
+        url  = f"{base}/{Config.SYMBOL.lower()}@depth@100ms"
         try:
-            state.log(f"Order book stream baglanıyor: {url}")
             async with websockets.connect(url, ping_interval=20, open_timeout=15) as ws:
-                state.log(f"Order book stream baglandi")
                 reconnect_delay = 2
-
                 async for raw in ws:
                     if not state.running:
                         break
                     data = json.loads(raw)
-
                     anti_manip.update_order_book(
                         {float(b[0]): float(b[1]) for b in data.get("b", [])},
                         {float(a[0]): float(a[1]) for a in data.get("a", [])}
                     )
-
                     sig = whale.process_order_book(data)
                     if sig:
                         signals.add(sig)
                         state.log(f"Sinyal [{sig.source}] {sig.direction} — {sig.details}")
 
         except OSError as e:
-            state.connected = False
             url_index += 1
-            state.log(f"Book stream hata: {e}", "WARN")
+            state.log(f"Book stream hata, backup deneniyor: {e}", "WARN")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 30)
 
@@ -218,21 +218,33 @@ async def _try_open_trade(decision: dict):
 
 def get_full_state() -> dict:
     price = whale.current_price or 0.0
+    now   = time.time()
     return {
         "bot": {
-            "running":    state.running,
-            "connected":  state.connected,
-            "uptime_sec": round(time.time() - state.started_at),
-            "tick_count": state.tick_count,
-            "status":     state.status_msg,
-            "symbol":     Config.SYMBOL,
+            "running":       state.running,
+            "connected":     state.connected,
+            "uptime_sec":    round(now - state.started_at),
+            "tick_count":    state.tick_count,
+            "status":        state.status_msg,
+            "symbol":        Config.SYMBOL,
+            "last_reload":   round(now - state.last_reload) if state.last_reload else None,
+        },
+        "config": {
+            "LAYERING_PULL_THRESHOLD": Config.LAYERING_PULL_THRESHOLD,
+            "MIN_SIGNALS":             Config.MIN_SIGNALS,
+            "WHALE_BTC_THRESHOLD":     Config.WHALE_BTC_THRESHOLD,
+            "STOP_LOSS_PCT":           Config.STOP_LOSS_PCT,
+            "TAKE_PROFIT_PCT":         Config.TAKE_PROFIT_PCT,
+            "TRADE_SIZE_USDT":         Config.TRADE_SIZE_USDT,
+            "DAILY_LOSS_LIMIT_PCT":    Config.DAILY_LOSS_LIMIT_PCT,
+            "CONFIG_RELOAD_SEC":       Config.CONFIG_RELOAD_SEC,
         },
         "market":     whale.get_stats(),
         "anti_manip": anti_manip.get_summary(),
         "risk":       risk.stats(price),
         "signals":    signals.recent_signals(30),
         "logs":       list(state.log_lines)[-40:],
-        "ts":         time.time(),
+        "ts":         now,
     }
 
 
@@ -244,11 +256,11 @@ async def run_bot():
     state.status_msg = "Calisiyor"
     state.log(
         f"WhaleBot baslatildi | {Config.SYMBOL} | "
-        f"Balina esigi: {Config.WHALE_BTC_THRESHOLD} BTC | "
-        f"Primary: {Config.STREAM_URL} | "
-        f"Backup: {Config.STREAM_URL_BACKUP}"
+        f"Layering esigi: {Config.LAYERING_PULL_THRESHOLD} | "
+        f"Config reload: her {Config.CONFIG_RELOAD_SEC}sn"
     )
     await asyncio.gather(
         _trade_stream(),
         _book_stream(),
+        _config_reload_loop(),
     )
