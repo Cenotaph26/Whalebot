@@ -1,10 +1,7 @@
 """
-Bot Engine — Ana Orkestrator  v4.0
+Bot Engine — Ana Orkestrator  v5.0
 ────────────────────────────────────
-Düzeltmeler (v4.0):
-  • state.log sinyal sadece SignalEngine gerçekten kabul ederse yazılır (dedup sonrası)
-  • "Islem engellendi" log spam önlendi: son engelleme mesajı 30sn cache'le bastırıldı
-  • _try_open_trade: anti-manip ve risk reddi ayrı cooldown'larla loglanır
+v5.0: update_order_book'a current_price geçirilir (spoof proximity check için)
 """
 
 import asyncio
@@ -33,7 +30,6 @@ class BotState:
         self.status_msg:    str   = "Baslatiliyor..."
         self.last_reload:   float = 0.0
         self.log_lines:     deque = deque(maxlen=80)
-        # v4: "islem engellendi" spam önleme
         self._last_block_log:    float = 0.0
         self._last_block_reason: str   = ""
 
@@ -43,7 +39,7 @@ class BotState:
         getattr(logger, level.lower() if level != "WARN" else "warning")(msg)
 
     def log_block(self, reason: str, level: str = "WARN"):
-        """Engelleme mesajlarını 30sn'de bir logla — spam önleme."""
+        """Engelleme mesajlarını 30sn'de bir logla."""
         now = time.time()
         if reason != self._last_block_reason or now - self._last_block_log > 30:
             self.log(reason, level)
@@ -60,10 +56,6 @@ risk       = RiskManager()
 _STREAM_URLS = [Config.STREAM_URL, Config.STREAM_URL_BACKUP]
 
 
-# ─────────────────────────────────────────
-#  Canli Config Reload Loop
-# ─────────────────────────────────────────
-
 async def _config_reload_loop():
     await asyncio.sleep(10)
     while state.running:
@@ -79,10 +71,6 @@ async def _config_reload_loop():
         await asyncio.sleep(interval)
 
 
-# ─────────────────────────────────────────
-#  Trade Stream
-# ─────────────────────────────────────────
-
 async def _trade_stream():
     url_index       = 0
     reconnect_delay = 2
@@ -94,7 +82,7 @@ async def _trade_stream():
             state.log(f"Trade stream baglanıyor: {url}")
             async with websockets.connect(url, ping_interval=20, open_timeout=15) as ws:
                 state.connected = True
-                state.log(f"Trade stream baglandi")
+                state.log("Trade stream baglandi")
                 reconnect_delay = 2
                 async for raw in ws:
                     if not state.running:
@@ -121,10 +109,6 @@ async def _trade_stream():
             reconnect_delay = min(reconnect_delay * 2, 30)
 
 
-# ─────────────────────────────────────────
-#  Order Book Stream
-# ─────────────────────────────────────────
-
 async def _book_stream():
     url_index       = 0
     reconnect_delay = 2
@@ -139,13 +123,14 @@ async def _book_stream():
                     if not state.running:
                         break
                     data = json.loads(raw)
+                    # v5: current_price geçirilir — spoof proximity check için
                     anti_manip.update_order_book(
                         {float(b[0]): float(b[1]) for b in data.get("b", [])},
-                        {float(a[0]): float(a[1]) for a in data.get("a", [])}
+                        {float(a[0]): float(a[1]) for a in data.get("a", [])},
+                        current_price=whale.current_price
                     )
                     sig = whale.process_order_book(data)
                     if sig:
-                        # v4: sadece SignalEngine kabul ederse logla
                         added = signals.add(sig)
                         if added:
                             state.log(f"Sinyal [{sig.source}] {sig.direction} — {sig.details}")
@@ -162,10 +147,6 @@ async def _book_stream():
             reconnect_delay = min(reconnect_delay * 2, 30)
 
 
-# ─────────────────────────────────────────
-#  Trade Handler
-# ─────────────────────────────────────────
-
 async def _handle_trade(data: dict):
     price  = float(data.get("p", 0))
     qty    = float(data.get("q", 0))
@@ -176,7 +157,6 @@ async def _handle_trade(data: dict):
 
     sig = whale.process_trade(data)
     if sig:
-        # v4: sadece kabul edilirse logla
         added = signals.add(sig)
         if added:
             state.log(f"Balina {sig.direction} [{sig.source}] guc={sig.strength:.2f} — {sig.details}")
@@ -204,14 +184,9 @@ async def _handle_trade(data: dict):
     state.last_tick   = time.time()
 
 
-# ─────────────────────────────────────────
-#  Trade Execution
-# ─────────────────────────────────────────
-
 async def _try_open_trade(decision: dict):
     safe, reason = anti_manip.is_safe_to_trade()
     if not safe:
-        # v4: spam önleme — aynı sebep 30sn'de bir loglanır
         state.log_block(f"Islem engellendi (anti-manip): {reason}")
         return
 
@@ -227,10 +202,6 @@ async def _try_open_trade(decision: dict):
         f"Boyut=${trade.size_usdt:.0f} | {', '.join(decision['sources'])}"
     )
 
-
-# ─────────────────────────────────────────
-#  State API
-# ─────────────────────────────────────────
 
 def get_full_state() -> dict:
     price = whale.current_price or 0.0
@@ -264,14 +235,10 @@ def get_full_state() -> dict:
     }
 
 
-# ─────────────────────────────────────────
-#  Bot Start
-# ─────────────────────────────────────────
-
 async def run_bot():
     state.status_msg = "Calisiyor"
     state.log(
-        f"WhaleBot baslatildi | {Config.SYMBOL} | "
+        f"WhaleBot v5 baslatildi | {Config.SYMBOL} | "
         f"Layering esigi: {Config.LAYERING_PULL_THRESHOLD} | "
         f"Config reload: her {Config.CONFIG_RELOAD_SEC}sn"
     )
