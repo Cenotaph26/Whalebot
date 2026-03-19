@@ -1,6 +1,10 @@
 """
-Bot Engine — Ana Orkestrator
-WebSocket baglantilari + canli config reload + tum moduller
+Bot Engine — Ana Orkestrator  v4.0
+────────────────────────────────────
+Düzeltmeler (v4.0):
+  • state.log sinyal sadece SignalEngine gerçekten kabul ederse yazılır (dedup sonrası)
+  • "Islem engellendi" log spam önlendi: son engelleme mesajı 30sn cache'le bastırıldı
+  • _try_open_trade: anti-manip ve risk reddi ayrı cooldown'larla loglanır
 """
 
 import asyncio
@@ -29,11 +33,22 @@ class BotState:
         self.status_msg:    str   = "Baslatiliyor..."
         self.last_reload:   float = 0.0
         self.log_lines:     deque = deque(maxlen=80)
+        # v4: "islem engellendi" spam önleme
+        self._last_block_log:    float = 0.0
+        self._last_block_reason: str   = ""
 
     def log(self, msg: str, level: str = "INFO"):
         ts = time.strftime("%H:%M:%S")
         self.log_lines.append({"ts": ts, "level": level, "msg": msg})
         getattr(logger, level.lower() if level != "WARN" else "warning")(msg)
+
+    def log_block(self, reason: str, level: str = "WARN"):
+        """Engelleme mesajlarını 30sn'de bir logla — spam önleme."""
+        now = time.time()
+        if reason != self._last_block_reason or now - self._last_block_log > 30:
+            self.log(reason, level)
+            self._last_block_log    = now
+            self._last_block_reason = reason
 
 
 state      = BotState()
@@ -50,12 +65,7 @@ _STREAM_URLS = [Config.STREAM_URL, Config.STREAM_URL_BACKUP]
 # ─────────────────────────────────────────
 
 async def _config_reload_loop():
-    """
-    Her CONFIG_RELOAD_SEC saniyede env var'lari tekrar okur.
-    Railway Variables'ta degisiklik yapinca bot otomatik alir,
-    restart gerekmez.
-    """
-    await asyncio.sleep(10)  # ilk 10sn bekleme
+    await asyncio.sleep(10)
     while state.running:
         try:
             interval = Config.CONFIG_RELOAD_SEC
@@ -135,8 +145,10 @@ async def _book_stream():
                     )
                     sig = whale.process_order_book(data)
                     if sig:
-                        signals.add(sig)
-                        state.log(f"Sinyal [{sig.source}] {sig.direction} — {sig.details}")
+                        # v4: sadece SignalEngine kabul ederse logla
+                        added = signals.add(sig)
+                        if added:
+                            state.log(f"Sinyal [{sig.source}] {sig.direction} — {sig.details}")
 
         except OSError as e:
             url_index += 1
@@ -164,13 +176,16 @@ async def _handle_trade(data: dict):
 
     sig = whale.process_trade(data)
     if sig:
-        signals.add(sig)
-        state.log(f"Balina {sig.direction} [{sig.source}] guc={sig.strength:.2f} — {sig.details}")
+        # v4: sadece kabul edilirse logla
+        added = signals.add(sig)
+        if added:
+            state.log(f"Balina {sig.direction} [{sig.source}] guc={sig.strength:.2f} — {sig.details}")
 
     vol_sig = whale.check_volume_spike()
     if vol_sig:
-        signals.add(vol_sig)
-        state.log(f"Hacim spike {vol_sig.direction} — {vol_sig.details}")
+        added = signals.add(vol_sig)
+        if added:
+            state.log(f"Hacim spike {vol_sig.direction} — {vol_sig.details}")
         if vol_sig.strength > 0.8:
             anti_manip.trigger_news_lock("Volatilite spike")
             state.log("Haber kilidi devreye girdi", "WARN")
@@ -196,13 +211,14 @@ async def _handle_trade(data: dict):
 async def _try_open_trade(decision: dict):
     safe, reason = anti_manip.is_safe_to_trade()
     if not safe:
-        state.log(f"Islem engellendi (anti-manip): {reason}", "WARN")
+        # v4: spam önleme — aynı sebep 30sn'de bir loglanır
+        state.log_block(f"Islem engellendi (anti-manip): {reason}")
         return
 
     trade = risk.open_trade(decision["direction"], decision["price"], decision["strength"])
     if not trade:
         _, msg = risk.can_open(decision["direction"])
-        state.log(f"Islem engellendi (risk): {msg}", "WARN")
+        state.log_block(f"Islem engellendi (risk): {msg}")
         return
 
     state.log(

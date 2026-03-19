@@ -137,17 +137,16 @@ class AntiManipEngine:
 
     def check_stop_hunt(self, current_price: float) -> bool:
         # v2: Sabit $50 yerine fiyatın %0.07'si (BTC $70k = $49, $30k = $21)
-        # Ayrıca round zone listesi sadece anlamlı seviyeleri içeriyor
+        # v4: strict < margin (dist==margin artık tetiklemez)
         margin = max(current_price * 0.0007, Config.STOP_HUNT_ROUND_MARGIN)
         danger_zones = [
             round(current_price / 1000) * 1000,
             round(current_price / 500)  * 500,
         ]
-        # $100 seviyesi çok sık tetiklendiği için kaldırıldı
 
         for zone in danger_zones:
             dist = abs(current_price - zone)
-            if 0 < dist < margin:
+            if 0 < dist < margin:   # strict < (dist==margin = boundary, tetikleme)
                 self._add_flag(ManipFlag(
                     flag_type="stop_hunt",
                     severity="MEDIUM",

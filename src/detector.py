@@ -227,10 +227,11 @@ class SignalEngine:
         # v2: source+direction → son eklenme zamanı (flood önleme)
         self._last_signal_time: dict[str, float] = {}
 
-    def add(self, signal: Signal):
+    def add(self, signal: Signal) -> bool:
         """
         v2: Aynı source+direction için cooldown uygula.
         imbalance: 10sn, diğerleri: 5sn
+        v4: Kabul edildi/reddedildi bool döndürür (log spam önleme için).
         """
         key = f"{signal.source}:{signal.direction}"
         now = signal.timestamp
@@ -238,11 +239,12 @@ class SignalEngine:
 
         last = self._last_signal_time.get(key, 0)
         if now - last < cooldown:
-            return   # çok yakın zamanda aynı sinyal geldi, yoksay
+            return False   # çok yakın zamanda aynı sinyal geldi, yoksay
 
         self._last_signal_time[key] = now
         self.pending.append(signal)
         self.history.append(signal)
+        return True
 
     def evaluate(self) -> Optional[dict]:
         now    = time.time()

@@ -42,7 +42,7 @@ class Config:
     SPOOF_MIN_LIFETIME_SEC  = _int  ("SPOOF_MIN_LIFETIME_SEC",  15)   # v2: 30→15 (gerçek spoof hızlı)
     WASH_PAIR_WINDOW_SEC    = _int  ("WASH_PAIR_WINDOW_SEC",    3)
     # v2: Sabit $50 yerine dinamik (fiyat*0.0007), bu değer minimum floor
-    STOP_HUNT_ROUND_MARGIN  = _float("STOP_HUNT_ROUND_MARGIN",  100.0)  # v2: 50→100
+    STOP_HUNT_ROUND_MARGIN  = _float("STOP_HUNT_ROUND_MARGIN",  150.0)  # v2: 50→100
     NEWS_LOCKOUT_SEC        = _int  ("NEWS_LOCKOUT_SEC",        90)
     # v2: 300→500 — aktif BTC piyasasında 5dk'da 300 seviye çekilmek normal
     LAYERING_PULL_THRESHOLD = _int  ("LAYERING_PULL_THRESHOLD", 500)
@@ -71,7 +71,7 @@ def reload_config():
         "IMBALANCE_THRESHOLD":    (_float, 0.68),
         "SPOOF_MIN_LIFETIME_SEC": (_int,   15),
         "WASH_PAIR_WINDOW_SEC":   (_int,   3),
-        "STOP_HUNT_ROUND_MARGIN": (_float, 100.0),
+        "STOP_HUNT_ROUND_MARGIN": (_float, 150.0),
         "NEWS_LOCKOUT_SEC":       (_int,   90),
         "LAYERING_PULL_THRESHOLD":(_int,   500),
         "MIN_SIGNALS":            (_int,   2),
