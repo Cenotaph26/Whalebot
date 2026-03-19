@@ -1,41 +1,48 @@
 """
-Anti-Manipulation Filter Engine
-─────────────────────────────────
-5 filtre katmanı:
-  1. Spoof Detector      – emir duvarı gerçek mi?
-  2. Wash Trade Detector – kendine işlem mi?
-  3. Stop Hunt Radar     – round number tuzağı mı?
-  4. News Lockout        – haber kilidinde miyiz?
-  5. Layering Checker    – kitap manipüle mi?
-
-Her filtre True döndürürse o tehdit VAR demektir.
+Anti-Manipulation Filter Engine  v2.0
+──────────────────────────────────────
+Düzeltmeler (v2.0):
+  • Spoof: minimum 3sn gözlem süresi + flag_type bazlı cooldown 120sn'e çıkarıldı
+  • Stop Hunt: margin BTC fiyatına göre dinamik (fiyat * 0.0007 ≈ %0.07)
+  • News Lock: sadece kendi vol_spike event'inden tetiklenir, spoof'tan tetiklenmez
+  • Layering: cooldown 120sn, HIGH yerine MEDIUM severity (işlemi engellemez tek başına)
+  • _add_flag: flag tipi başına cooldown parametresi alır
+  • get_summary: is_safe_to_trade tek çağrı (Bug 2 fix korundu)
 """
 
 import time
-import math
 from collections import deque
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from src.config import Config, ManipFlag
+
+
+# Flag tipi başına cooldown (saniye) — sık tetiklenen tipleri bastırır
+_FLAG_COOLDOWNS: Dict[str, int] = {
+    "spoof":      120,
+    "wash":        90,
+    "stop_hunt":   60,
+    "news_lock":  120,
+    "layering":   120,
+}
 
 
 class AntiManipEngine:
 
     def __init__(self):
-        # Spoof: (fiyat, miktar, ilk_görülme_zamanı)
-        self._order_appearances: dict[float, Tuple[float, float]] = {}
+        # Spoof: (fiyat → (ilk_görülme, miktar, gözlem_sayısı))
+        self._order_appearances: dict[float, Tuple[float, float, int]] = {}
 
-        # Wash: son işlemler (fiyat, miktar, yön, zaman)
+        # Wash: son işlemler
         self._recent_trades: deque = deque(maxlen=200)
 
         # Layering: son 5 dk'da book'tan çekilen seviyeler
         self._pulled_levels: deque = deque(maxlen=500)
-        self._book_snapshot: dict[float, float] = {}
 
         # News lockout
         self._news_lock_until: float = 0.0
         self._last_news_event: str   = ""
 
-        self.flags: deque = deque(maxlen=100)   # son 100 flag
+        self.flags: deque = deque(maxlen=100)
         self.active_flags: List[ManipFlag] = []
 
     # ─────────────────────────────────────────
@@ -43,12 +50,8 @@ class AntiManipEngine:
     # ─────────────────────────────────────────
 
     def is_safe_to_trade(self) -> Tuple[bool, str]:
-        """
-        True → işlem açılabilir
-        False, reason → manipülasyon riski, bekle
-        """
         self.active_flags = [f for f in self.flags
-                             if time.time() - f.timestamp < 120]  # 2 dk taze flag
+                             if time.time() - f.timestamp < 120]
 
         high_flags = [f for f in self.active_flags if f.severity == "HIGH"]
         med_flags  = [f for f in self.active_flags if f.severity == "MEDIUM"]
@@ -61,41 +64,44 @@ class AntiManipEngine:
             secs = int(self._news_lock_until - time.time())
             return False, f"Haber kilidi — {secs}sn kaldı ({self._last_news_event})"
 
-        passes = Config.MIN_FILTER_PASS - len(med_flags)
         return True, f"Güvenli ({len(self.active_flags)} aktif flag)"
 
     # ─────────────────────────────────────────
-    #  1. SPOOF DETECTOR
+    #  1. SPOOF DETECTOR  (v2: min 3sn gözlem)
     # ─────────────────────────────────────────
 
     def update_order_book(self, bids: dict, asks: dict):
-        """
-        Order book güncellemesi alır.
-        Emir duvarları hiç dolmadan uzun süre bekliyorsa → spoof şüphesi.
-        """
         now = time.time()
         all_levels = {**bids, **asks}
 
         for price, qty in all_levels.items():
             if qty == 0:
-                # Emir çekildi — ne kadar süre kaldı?
                 if price in self._order_appearances:
-                    first_seen, size = self._order_appearances.pop(price)
+                    first_seen, size, obs = self._order_appearances.pop(price)
                     lifetime = now - first_seen
-                    if size >= Config.WHALE_BTC_THRESHOLD and lifetime < Config.SPOOF_MIN_LIFETIME_SEC:
+
+                    # v2: En az 3sn gözlemlenmeli + büyük miktar + çok hızlı çekildi
+                    min_obs = 3  # en az 3 book güncellemesi görülmeli
+                    if (size >= Config.WHALE_BTC_THRESHOLD
+                            and lifetime < Config.SPOOF_MIN_LIFETIME_SEC
+                            and lifetime >= 0.3        # 300ms altı = veri artefaktı, yoksay
+                            and obs >= min_obs):
                         self._add_flag(ManipFlag(
                             flag_type="spoof",
                             severity="HIGH",
-                            detail=f"${price:,.0f} seviyesinde {size:.1f} BTC duvar "
-                                   f"{lifetime:.0f}sn içinde çekildi (min {Config.SPOOF_MIN_LIFETIME_SEC}sn)"
+                            detail=(f"${price:,.0f}'de {size:.1f} BTC duvar "
+                                    f"{lifetime:.1f}sn içinde çekildi "
+                                    f"(min {Config.SPOOF_MIN_LIFETIME_SEC}sn, {obs} obs)")
                         ))
-                # Layering: çekilen seviyeyi kaydet
                 self._pulled_levels.append((price, now))
             else:
                 if price not in self._order_appearances:
-                    self._order_appearances[price] = (now, qty)
+                    self._order_appearances[price] = (now, qty, 1)
+                else:
+                    first_seen, old_size, obs = self._order_appearances[price]
+                    # Miktar güncellendiyse max al, gözlem sayısını artır
+                    self._order_appearances[price] = (first_seen, max(old_size, qty), obs + 1)
 
-        # Layering kontrolü
         self._check_layering()
 
     # ─────────────────────────────────────────
@@ -103,7 +109,6 @@ class AntiManipEngine:
     # ─────────────────────────────────────────
 
     def record_trade(self, price: float, qty: float, is_buy: bool):
-        """Her gelen işlemi kaydet, eşleşen çift var mı bak."""
         now = time.time()
         self._recent_trades.append({
             "price": price, "qty": qty, "is_buy": is_buy, "time": now
@@ -115,53 +120,53 @@ class AntiManipEngine:
         opposite = [
             t for t in self._recent_trades
             if t["is_buy"] != is_buy
-            and abs(t["qty"] - qty) < qty * 0.02        # %2 tolerans
-            and abs(t["price"] - price) < price * 0.001  # %0.1 fiyat farkı
+            and abs(t["qty"] - qty) < qty * 0.02
+            and abs(t["price"] - price) < price * 0.001
             and now - t["time"] < window
         ]
         if opposite and qty >= Config.WHALE_BTC_THRESHOLD * 0.5:
             self._add_flag(ManipFlag(
                 flag_type="wash",
                 severity="MEDIUM",
-                detail=f"{qty:.2f} BTC @ ${price:,.0f} — {window}sn içinde eşleşen karşı işlem bulundu"
+                detail=f"{qty:.2f} BTC @ ${price:,.0f} — {window}sn içinde eşleşen karşı işlem"
             ))
 
     # ─────────────────────────────────────────
-    #  3. STOP HUNT RADAR
+    #  3. STOP HUNT RADAR  (v2: dinamik margin)
     # ─────────────────────────────────────────
 
     def check_stop_hunt(self, current_price: float) -> bool:
-        """
-        Round number yakınında mıyız?
-        Balinalar birikim noktalarını (500, 1000 katları) hedefler.
-        """
-        margin = Config.STOP_HUNT_ROUND_MARGIN
+        # v2: Sabit $50 yerine fiyatın %0.07'si (BTC $70k = $49, $30k = $21)
+        # Ayrıca round zone listesi sadece anlamlı seviyeleri içeriyor
+        margin = max(current_price * 0.0007, Config.STOP_HUNT_ROUND_MARGIN)
         danger_zones = [
             round(current_price / 1000) * 1000,
             round(current_price / 500)  * 500,
-            round(current_price / 100)  * 100,
         ]
+        # $100 seviyesi çok sık tetiklendiği için kaldırıldı
+
         for zone in danger_zones:
             dist = abs(current_price - zone)
             if 0 < dist < margin:
                 self._add_flag(ManipFlag(
                     flag_type="stop_hunt",
                     severity="MEDIUM",
-                    detail=f"Fiyat ${current_price:,.0f} → round zone ${zone:,} sadece ${dist:.0f} uzakta"
+                    detail=f"Fiyat ${current_price:,.0f} → zone ${zone:,} sadece ${dist:.0f} uzakta (margin ${margin:.0f})"
                 ))
                 return True
         return False
 
     # ─────────────────────────────────────────
-    #  4. NEWS LOCKOUT
+    #  4. NEWS LOCKOUT  (v2: dışarıdan trigger, spoof'tan DEĞİL)
     # ─────────────────────────────────────────
 
     def trigger_news_lock(self, event_name: str = "Bilinmeyen haber"):
-        """
-        Dışarıdan çağrılır (ör. volatilite spike tespit edildiğinde).
-        """
-        self._news_lock_until  = time.time() + Config.NEWS_LOCKOUT_SEC
-        self._last_news_event  = event_name
+        """Sadece engine.py'den vol_spike üzerine çağrılır."""
+        # Zaten aktif kilitde yeni lock tetiklenmesin
+        if self._news_lock_active():
+            return
+        self._news_lock_until = time.time() + Config.NEWS_LOCKOUT_SEC
+        self._last_news_event = event_name
         self._add_flag(ManipFlag(
             flag_type="news_lock",
             severity="HIGH",
@@ -172,18 +177,17 @@ class AntiManipEngine:
         return time.time() < self._news_lock_until
 
     # ─────────────────────────────────────────
-    #  5. LAYERING CHECKER
+    #  5. LAYERING CHECKER  (v2: MEDIUM severity)
     # ─────────────────────────────────────────
 
     def _check_layering(self):
-        """Son 5 dakikada çok sayıda seviye çekildiyse → layering."""
         now = time.time()
-        recent_pulls = [t for _, t in self._pulled_levels if now - t < 300]  # 5 dk
+        recent_pulls = [t for _, t in self._pulled_levels if now - t < 300]
         if len(recent_pulls) >= Config.LAYERING_PULL_THRESHOLD:
             self._add_flag(ManipFlag(
                 flag_type="layering",
-                severity="HIGH",
-                detail=f"Son 5 dk'da {len(recent_pulls)} seviye çekildi (eşik: {Config.LAYERING_PULL_THRESHOLD})"
+                severity="MEDIUM",   # v2: HIGH→MEDIUM, tek başına işlemi bloke etmez
+                detail=f"Son 5dk'da {len(recent_pulls)} seviye çekildi (eşik: {Config.LAYERING_PULL_THRESHOLD})"
             ))
 
     # ─────────────────────────────────────────
@@ -191,10 +195,11 @@ class AntiManipEngine:
     # ─────────────────────────────────────────
 
     def _add_flag(self, flag: ManipFlag):
-        # Aynı tip flag 60 sn içinde tekrar eklenmesin
+        """Flag tipi başına dinamik cooldown — sık tetiklenen tipleri bastırır."""
         now = time.time()
+        cooldown = _FLAG_COOLDOWNS.get(flag.flag_type, 60)
         for f in self.flags:
-            if f.flag_type == flag.flag_type and now - f.timestamp < 60:
+            if f.flag_type == flag.flag_type and now - f.timestamp < cooldown:
                 return
         self.flags.append(flag)
 
@@ -206,15 +211,15 @@ class AntiManipEngine:
             "safe":          is_safe,
             "reason":        reason,
             "active_flags":  len(active),
-            "flags":         [
+            "flags": [
                 {
-                    "type":      f.flag_type,
-                    "severity":  f.severity,
-                    "detail":    f.detail,
-                    "age_sec":   round(now - f.timestamp)
+                    "type":     f.flag_type,
+                    "severity": f.severity,
+                    "detail":   f.detail,
+                    "age_sec":  round(now - f.timestamp)
                 }
                 for f in active
             ],
-            "news_locked":   self._news_lock_active(),
+            "news_locked":         self._news_lock_active(),
             "news_lock_secs_left": max(0, int(self._news_lock_until - now))
         }

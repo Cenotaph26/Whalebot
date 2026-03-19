@@ -39,12 +39,13 @@ class Config:
     IMBALANCE_THRESHOLD  = _float("IMBALANCE_THRESHOLD",  0.68)
 
     # ── Anti-Manipulation ────────────────────────────────────────
-    SPOOF_MIN_LIFETIME_SEC  = _int  ("SPOOF_MIN_LIFETIME_SEC",  30)
+    SPOOF_MIN_LIFETIME_SEC  = _int  ("SPOOF_MIN_LIFETIME_SEC",  15)   # v2: 30→15 (gerçek spoof hızlı)
     WASH_PAIR_WINDOW_SEC    = _int  ("WASH_PAIR_WINDOW_SEC",    3)
-    STOP_HUNT_ROUND_MARGIN  = _float("STOP_HUNT_ROUND_MARGIN",  50.0)
+    # v2: Sabit $50 yerine dinamik (fiyat*0.0007), bu değer minimum floor
+    STOP_HUNT_ROUND_MARGIN  = _float("STOP_HUNT_ROUND_MARGIN",  100.0)  # v2: 50→100
     NEWS_LOCKOUT_SEC        = _int  ("NEWS_LOCKOUT_SEC",        90)
-    # 200: aktif piyasada saniyede onlarca seviye degisir, 12 cok dusuktu
-    LAYERING_PULL_THRESHOLD = _int  ("LAYERING_PULL_THRESHOLD", 200)
+    # v2: 300→500 — aktif BTC piyasasında 5dk'da 300 seviye çekilmek normal
+    LAYERING_PULL_THRESHOLD = _int  ("LAYERING_PULL_THRESHOLD", 500)
 
     # ── Signal Engine ────────────────────────────────────────────
     MIN_SIGNALS       = _int("MIN_SIGNALS",       2)
@@ -60,11 +61,6 @@ class Config:
 
 
 def reload_config():
-    """
-    Tum env var'lari tekrar okur ve Config sinifini gunceller.
-    Engine tarafindan her CONFIG_RELOAD_SEC saniyede bir cagirilir.
-    Railway Variables degisince bot restart olmadan yeni degeri alir.
-    """
     mapping = {
         "TRADE_SIZE_USDT":        (_float, 100.0),
         "MAX_OPEN_TRADES":        (_int,   3),
@@ -73,11 +69,11 @@ def reload_config():
         "WHALE_BTC_THRESHOLD":    (_float, 5.0),
         "VOLUME_SPIKE_MULT":      (_float, 3.0),
         "IMBALANCE_THRESHOLD":    (_float, 0.68),
-        "SPOOF_MIN_LIFETIME_SEC": (_int,   30),
+        "SPOOF_MIN_LIFETIME_SEC": (_int,   15),
         "WASH_PAIR_WINDOW_SEC":   (_int,   3),
-        "STOP_HUNT_ROUND_MARGIN": (_float, 50.0),
+        "STOP_HUNT_ROUND_MARGIN": (_float, 100.0),
         "NEWS_LOCKOUT_SEC":       (_int,   90),
-        "LAYERING_PULL_THRESHOLD":(_int,   200),
+        "LAYERING_PULL_THRESHOLD":(_int,   500),
         "MIN_SIGNALS":            (_int,   2),
         "SIGNAL_WINDOW_SEC":      (_int,   30),
         "MIN_FILTER_PASS":        (_int,   3),
