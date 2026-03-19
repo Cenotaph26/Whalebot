@@ -201,9 +201,10 @@ class AntiManipEngine:
     def get_summary(self) -> dict:
         now = time.time()
         active = [f for f in self.flags if now - f.timestamp < 120]
+        is_safe, reason = self.is_safe_to_trade()
         return {
-            "safe":          self.is_safe_to_trade()[0],
-            "reason":        self.is_safe_to_trade()[1],
+            "safe":          is_safe,
+            "reason":        reason,
             "active_flags":  len(active),
             "flags":         [
                 {

@@ -354,15 +354,15 @@ function render(d){
     </div>`).join('');
   const cfg=d.config||{};
   const lr=bot.last_reload;
-  .textContent  = cfg.LAYERING_PULL_THRESHOLD ?? '—';
-  .textContent = cfg.MIN_SIGNALS ?? '—';
-  .textContent  = (cfg.WHALE_BTC_THRESHOLD ?? '—') + ' BTC';
-  .textContent     = (cfg.STOP_LOSS_PCT ?? '—') + '%';
-  .textContent     = (cfg.TAKE_PROFIT_PCT ?? '—') + '%';
-  .textContent   = '$' + (cfg.TRADE_SIZE_USDT ?? '—');
-  .textContent    = (cfg.DAILY_LOSS_LIMIT_PCT ?? '—') + '%';
-  .textContent = lr != null ? lr + 'sn once' : '—';
-  .textContent = lr != null && lr < cfg.CONFIG_RELOAD_SEC*2 ? 'CANLI' : 'STALE';
+  $('c-layer').textContent   = cfg.LAYERING_PULL_THRESHOLD ?? '—';
+  $('c-minsig').textContent  = cfg.MIN_SIGNALS ?? '—';
+  $('c-whale').textContent   = (cfg.WHALE_BTC_THRESHOLD ?? '—') + ' BTC';
+  $('c-sl').textContent      = (cfg.STOP_LOSS_PCT ?? '—') + '%';
+  $('c-tp').textContent      = (cfg.TAKE_PROFIT_PCT ?? '—') + '%';
+  $('c-size').textContent    = '$' + (cfg.TRADE_SIZE_USDT ?? '—');
+  $('c-dll').textContent     = (cfg.DAILY_LOSS_LIMIT_PCT ?? '—') + '%';
+  $('c-reload').textContent  = lr != null ? lr + 'sn önce' : '—';
+  $('reload-badge').textContent = lr != null && lr < cfg.CONFIG_RELOAD_SEC*2 ? 'CANLI' : 'STALE';
   if(logs.length>0){
     const lb=$('log-body');
     const atBottom=lb.scrollHeight-lb.clientHeight<=lb.scrollTop+40;

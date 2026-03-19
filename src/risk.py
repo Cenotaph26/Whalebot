@@ -43,11 +43,15 @@ class RiskManager:
 
     def daily_loss_ok(self) -> bool:
         self._maybe_reset_day()
+        if self.daily_start == 0:
+            return True
         loss_pct = (self.daily_start - self.balance) / self.daily_start * 100
         return loss_pct < Config.DAILY_LOSS_LIMIT_PCT
 
     def daily_loss_pct(self) -> float:
         self._maybe_reset_day()
+        if self.daily_start == 0:
+            return 0.0
         return round((self.daily_start - self.balance) / self.daily_start * 100, 2)
 
     # ─────────────────────────────────────────
